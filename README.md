@@ -1,400 +1,529 @@
 # Hauler Truck - Mining Operations System
 
-Aplikasi Flutter untuk mensimulasikan dan mengoperasikan satu siklus otomatis tambang dengan peta radius, event-sourcing, dan ketahanan offline. Server (Cloud Functions) bertindak sebagai arbiter status; client hanya mengirim telemetry dan intent.
+Aplikasi Flutter untuk mengelola operasi tambang dengan sistem **offline-first** dan **event-sourcing**. Sistem ini menggunakan pola **offline-first** dimana semua data selalu disimpan ke local queue terlebih dahulu, kemudian di-sync ke server di background.
 
-## 📚 Dokumentasi Lengkap
+---
 
-Untuk dokumentasi lengkap dengan flowchart, diagram alur data, metode sinkronisasi, dan detail olah data, silakan lihat:
+## 📊 Flowchart Proses Simpan Status
 
-- **[DOKUMENTASI_LENGKAP.md](./DOKUMENTASI_LENGKAP.md)** - Dokumentasi utama lengkap
-- **[DIAGRAM_FLOWCHART.md](./DIAGRAM_FLOWCHART.md)** - Flowchart detail untuk semua proses
-- **[ARSITEKTUR_DAN_SYNC.md](./ARSITEKTUR_DAN_SYNC.md)** - Arsitektur detail dan metode sinkronisasi
+### Overview Proses Simpan Status
 
-## 🎯 Tujuan Utama
-
-1. **Siklus Status Otomatis**: QUEUING → SPOTTING → LOADING → HAULING_LOAD → DUMPING → HAULING_EMPTY → STANDBY
-2. **Trigger Otomatis**:
-   - **T1**: QUEUING → SPOTTING saat loader.waitingTruck == true, hauler dalam radius loader
-   - **T2**: HAULING_LOAD → DUMPING saat bodyUp == true di area dumping
-3. **Simulasi pergerakan otomatis** di peta (OSM via flutter_map)
-4. **Offline-first**: siklus tetap selesai lokal, lalu sinkron ke Firestore saat online
-
-## 📐 Arsitektur
-
-### State Machine
+Proses simpan status dimulai ketika terjadi transisi status hauler (dari status A ke status B). Sistem menggunakan pola **offline-first** dimana data selalu disimpan ke local queue (Hive) terlebih dahulu, kemudian di-sync ke Firestore di background.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        HAULER STATE MACHINE                          │
+│          FLOWCHART PROSES SIMPAN STATUS                               │
+│          (Status Transition → Local Queue → Firestore)              │
 └─────────────────────────────────────────────────────────────────────┘
 
-    ┌──────────┐     Start      ┌──────────┐
-    │ STANDBY  │ ──────────────→│ QUEUING  │←─────────────────────┐
-    └──────────┘                └──────────┘                      │
-         ↑                           │                            │
-         │                           │ T1: In loader radius       │
-         │                           │     + loader waiting       │
-         │                           ↓                            │
-         │                     ┌──────────┐                       │
-         │                     │ SPOTTING │                       │
-         │                     └──────────┘                       │
-         │                           │                            │
-         │                           │ Loader confirmed           │
-         │                           ↓                            │
-         │                     ┌──────────┐                       │
-         │                     │ LOADING  │                       │
-         │                     └──────────┘                       │
-         │                           │                            │
-         │                           │ Loading complete           │
-         │                           ↓                            │
-         │                    ┌─────────────┐                     │
-         │                    │HAULING_LOAD │                     │
-         │                    └─────────────┘                     │
-         │                           │                            │
-         │                           │ T2: In dump radius         │
-         │                           │     + bodyUp = true        │
-         │                           ↓                            │
-         │                     ┌──────────┐                       │
-         │                     │ DUMPING  │                       │
-         │                     └──────────┘                       │
-         │                           │                            │
-         │                           │ bodyUp = false             │
-         │                           ↓                            │
-         │                   ┌──────────────┐                     │
-         └───────────────────│HAULING_EMPTY │─────────────────────┘
-                             └──────────────┘
-                                   ↓
-                             Back to QUEUING
-                             (cycle repeats)
+START
+  │
+  ▼
+┌─────────────────┐
+│ Status          │
+│ Transition      │
+│ Triggered       │
+│                 │
+│ - Auto (T1/T2)  │
+│ - Manual        │
+│ - System        │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ HaulerBloc      │
+│ _updateHauler   │
+│ Status()        │
+│                 │
+│ Dipanggil       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Prepare Data    │
+│                 │
+│ - Get previous  │
+│   status        │
+│ - Get new       │
+│   status        │
+│ - Get cause     │
+│ - Increment seq │
+│ - Get timestamp │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Create Event    │
+│ Entity          │
+│                 │
+│ - Generate UUID │
+│ - haulerId       │
+│ - cycleId        │
+│ - fromStatus     │
+│ - toStatus       │
+│ - cause          │
+│ - seq            │
+│ - dedupKey       │
+│ - deviceTime     │
+│ - metadata       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Save Event      │
+│ (Step 1)        │
+│                 │
+│ haulerRepository│
+│ .saveEvent()    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    OFFLINE-FIRST: SAVE EVENT                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────────┐                                       │
+│  │ ALWAYS: Queue   │                                       │
+│  │ to Hive First   │                                       │
+│  │                 │                                       │
+│  │ - Create        │                                       │
+│  │   QueueItemData │                                       │
+│  │ - Type: event   │                                       │
+│  │ - Store event   │                                       │
+│  │   data          │                                       │
+│  └────────┬────────┘                                       │
+│           │                                                 │
+│           ▼                                                 │
+│  ┌─────────────────┐                                       │
+│  │ Hive Storage    │                                       │
+│  │                 │                                       │
+│  │ - Serialize to  │                                       │
+│  │   JSON          │                                       │
+│  │ - Store in box: │                                       │
+│  │   offline_queue │                                       │
+│  │ - Generate      │                                       │
+│  │   queueKey      │                                       │
+│  └────────┬────────┘                                       │
+│           │                                                 │
+│           ▼                                                 │
+│  ┌─────────────────┐                                       │
+│  │ Check Online?   │                                       │
+│  └────────┬────────┘                                       │
+│           │                                                 │
+│           ├─── OFFLINE ──▶ [Return Success]                │
+│           │     (Queue only)                               │
+│           │                                                 │
+│           ▼ ONLINE                                         │
+│  ┌─────────────────┐                                       │
+│  │ Background Sync │                                       │
+│  │                 │                                       │
+│  │ - Firestore     │                                       │
+│  │   saveEvent()   │                                       │
+│  │ - Collection:   │                                       │
+│  │   hauler_events │                                       │
+│  │ - Doc ID:        │                                       │
+│  │   dedupKey      │                                       │
+│  │ - Merge: true   │                                       │
+│  └────────┬────────┘                                       │
+│           │                                                 │
+│           ├─── SUCCESS ──▶ [Remove from Queue]             │
+│           │                                                 │
+│           └─── FAIL ──▶ [Keep in Queue]                    │
+│                     (Will sync later)                       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Update Local    │
+│ Hauler State    │
+│                 │
+│ - currentStatus │
+│ - lastStatus    │
+│   ChangeAt      │
+│ - eventSeq      │
+│ - deviceTime    │
+│ - cycleId       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Update Hauler   │
+│ (Step 2)        │
+│                 │
+│ haulerRepository│
+│ .updateHauler() │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│              OFFLINE-FIRST: UPDATE HAULER                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────────┐                                       │
+│  │ ALWAYS: Queue   │                                       │
+│  │ to Hive First   │                                       │
+│  │                 │                                       │
+│  │ - Create        │                                       │
+│  │   QueueItemData │                                       │
+│  │ - Type:         │                                       │
+│  │   haulerUpdate  │                                       │
+│  │ - Store update  │                                       │
+│  │   data          │                                       │
+│  └────────┬────────┘                                       │
+│           │                                                 │
+│           ▼                                                 │
+│  ┌─────────────────┐                                       │
+│  │ Hive Storage    │                                       │
+│  │                 │                                       │
+│  │ - Serialize to  │                                       │
+│  │   JSON          │                                       │
+│  │ - Store in box: │                                       │
+│  │   offline_queue │                                       │
+│  │ - Generate      │                                       │
+│  │   queueKey      │                                       │
+│  └────────┬────────┘                                       │
+│           │                                                 │
+│           ▼                                                 │
+│  ┌─────────────────┐                                       │
+│  │ Check Online?   │                                       │
+│  └────────┬────────┘                                       │
+│           │                                                 │
+│           ├─── OFFLINE ──▶ [Return Success]                │
+│           │     (Queue only)                               │
+│           │                                                 │
+│           ▼ ONLINE                                         │
+│  ┌─────────────────┐                                       │
+│  │ Background Sync │                                       │
+│  │                 │                                       │
+│  │ - Firestore     │                                       │
+│  │   updateHauler()│                                       │
+│  │ - Collection:   │                                       │
+│  │   haulers       │                                       │
+│  │ - Document:     │                                       │
+│  │   {haulerId}    │                                       │
+│  │ - Add           │                                       │
+│  │   deviceTime    │                                       │
+│  └────────┬────────┘                                       │
+│           │                                                 │
+│           ├─── SUCCESS ──▶ [Remove from Queue]             │
+│           │                                                 │
+│           └─── FAIL ──▶ [Keep in Queue]                    │
+│                     (Will sync later)                       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Update Cycle    │
+│ Steps (Step 3)  │
+│                 │
+│ - Create step   │
+│ - Add to cycle  │
+│ - Save cycle    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Emit New State  │
+│                 │
+│ - Updated hauler│
+│ - Updated cycle │
+│ - New eventSeq  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Update UI       │
+│                 │
+│ - Status panel  │
+│ - Event log     │
+│ - Map markers   │
+└────────┬────────┘
+         │
+         ▼
+        END
 ```
 
-### Alur Data
+---
+
+## 🔄 Proses Sync Queue ke Firestore
+
+Ketika data sudah di-queue di Hive, proses sync ke Firestore terjadi di background:
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                           DATA FLOW                                   │
-└──────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│          FLOWCHART SYNC QUEUE KE FIRESTORE                          │
+└─────────────────────────────────────────────────────────────────────┘
 
-   HAULER APP                    FIRESTORE                CLOUD FUNCTIONS
-  ┌──────────┐                 ┌──────────┐              ┌──────────────┐
-  │          │   Telemetry     │          │   Trigger    │              │
-  │  Location├────────────────→│telemetry ├─────────────→│processTelem. │
-  │  + Body  │                 │          │              │              │
-  └──────────┘                 └──────────┘              └──────┬───────┘
-       │                                                        │
-       │                                                        │ Check
-       │                                                        │ Auto
-       │    Intent                                              │ Trans.
-       ├──────────────────────→┌──────────┐                     │
-       │  (REQUEST_SPOTTING,   │ intents  │                     │
-       │   CONFIRM_LOADING,    └────┬─────┘                     │
-       │   etc.)                    │                           │
-       │                            │ Trigger                   │
-       │                            ↓                           ↓
-       │                      ┌──────────────┐           ┌──────────────┐
-       │                      │processIntent │           │ Validate &   │
-       │                      └──────┬───────┘           │ Apply Trans. │
-       │                             │                   └──────┬───────┘
-       │                             │ Validate                 │
-       │                             ↓                          │
-       │                      ┌──────────────┐                  │
-       │                      │ hauler_events│←─────────────────┘
-       │                      └──────────────┘
-       │                             │
-       │                             │ Update
-       │                             ↓
-       │                      ┌──────────────┐
-       │◀─────────────────────│   haulers    │
-       │    Stream updates    └──────────────┘
-       │
-  ┌────┴─────┐
-  │ UI Update│
-  │ (Local   │
-  │ Optimist)│
-  └──────────┘
+[Connectivity Detected / Background Sync Triggered]
+         │
+         ▼
+┌─────────────────┐
+│ Get Pending     │
+│ Queue Items     │
+│                 │
+│ - Read from     │
+│   Hive box      │
+│ - Deserialize   │
+│   JSON          │
+│ - Sort by       │
+│   createdAt     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ FOR each item:  │
+│                 │
+│ Check retry     │
+│ count           │
+└────────┬────────┘
+         │
+         ├─── Retry ≥ Max ──▶ [Remove Item] ──▶ [Next Item]
+         │
+         ▼ Retry < Max
+┌─────────────────┐
+│ Process Item    │
+│ by Type         │
+└────────┬────────┘
+         │
+         ├─── Type: event ──▶ [Path A: Save Event]
+         │
+         ├─── Type: haulerUpdate ──▶ [Path B: Update Hauler]
+         │
+         └─── Type: telemetry ──▶ [Path C: Save Telemetry]
+         │
+         ▼ [Path A: Save Event]
+┌─────────────────┐
+│ Firestore       │
+│ saveEvent       │
+│                 │
+│ collection:     │
+│   hauler_events │
+│ document ID:    │
+│   {dedupKey}    │
+│ operation:      │
+│   set(merge:true)│
+│                 │
+│ Note: dedupKey  │
+│ as doc ID      │
+│ ensures         │
+│ idempotency     │
+└────────┬────────┘
+         │
+         ├─── SUCCESS ──▶ [Remove from Queue] ──▶ [Next Item]
+         │
+         └─── FAIL ──▶ [Increment Retry Count] ──▶ [Next Item]
+         │
+         ▼ [Path B: Update Hauler]
+┌─────────────────┐
+│ Firestore       │
+│ updateHauler    │
+│                 │
+│ collection:     │
+│   haulers       │
+│ document:       │
+│   {haulerId}    │
+│ operation:      │
+│   update()      │
+│                 │
+│ - Add deviceTime│
+└────────┬────────┘
+         │
+         ├─── SUCCESS ──▶ [Remove from Queue] ──▶ [Next Item]
+         │
+         └─── FAIL ──▶ [Increment Retry Count] ──▶ [Next Item]
+         │
+         ▼ [Path C: Save Telemetry]
+┌─────────────────┐
+│ Firestore       │
+│ saveTelemetry   │
+│                 │
+│ collection:     │
+│   telemetry     │
+│ document ID:    │
+│   {telemetryId} │
+│ operation:      │
+│   set()         │
+└────────┬────────┘
+         │
+         ├─── SUCCESS ──▶ [Remove from Queue] ──▶ [Next Item]
+         │
+         └─── FAIL ──▶ [Increment Retry Count] ──▶ [Next Item]
+         │
+         ▼ [All Items Processed]
+        END
 ```
 
-### Event Sourcing
+---
 
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│                          EVENT SOURCING                                │
-└───────────────────────────────────────────────────────────────────────┘
+## 📝 Detail Proses Simpan Status
 
-  Event Structure:
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │ {                                                                    │
-  │   id: "uuid",                                                        │
-  │   haulerId: "HLR-xxxx",                                             │
-  │   cycleId: "cycle-uuid",                                            │
-  │   fromStatus: "QUEUING",                                            │
-  │   toStatus: "SPOTTING",                                             │
-  │   cause: "ENTERED_LOADER_RADIUS",                                   │
-  │   deviceTime: "2024-01-15T10:30:00Z",                              │
-  │   serverTime: <server timestamp>,                                   │
-  │   seq: 5,                           ← Monotonic per cycle          │
-  │   dedupKey: "HLR-xxxx_cycle_5_T1"   ← Idempotency key             │
-  │ }                                                                    │
-  └─────────────────────────────────────────────────────────────────────┘
+### 1. Trigger Status Transition
 
-  Deduplication:
-  - dedupKey = `${haulerId}_${cycleId}_${seq}_${cause}`
-  - Uses dedupKey as document ID for idempotent writes
-  - Server rejects duplicate events based on seq ordering
-```
+Status transition dapat dipicu oleh:
+- **Auto Transition T1**: QUEUING → SPOTTING (masuk radius loader + loader waiting)
+- **Auto Transition T2**: HAULING_LOAD → DUMPING (masuk radius dump + bodyUp)
+- **Manual Transition**: User klik tombol transisi manual
+- **System Transition**: Cycle start/complete
 
-## 📊 Desain Data Firestore
+### 2. Create Event Entity
 
-### Collections
-
-```
-firestore/
-├── haulers/                    # Hauler/Truck documents
-│   └── {haulerId}/
-│       ├── id: string
-│       ├── currentStatus: string
-│       ├── lastStatusChangeAt: timestamp
-│       ├── location: { lat, lng, accuracy }
-│       ├── bodyUp: boolean
-│       ├── online: boolean
-│       ├── deviceTime: timestamp
-│       ├── cycleId: string?
-│       ├── assignedLoaderId: string?
-│       └── eventSeq: number
-│
-├── hauler_events/              # Event sourcing log
-│   └── {dedupKey}/
-│       ├── haulerId: string
-│       ├── cycleId: string
-│       ├── fromStatus: string?
-│       ├── toStatus: string?
-│       ├── cause: string
-│       ├── deviceTime: timestamp
-│       ├── serverTime: timestamp
-│       ├── seq: number
-│       ├── dedupKey: string
-│       └── metadata: object?
-│
-├── telemetry/                  # Location & sensor data
-│   └── {telemetryId}/
-│       ├── haulerId: string
-│       ├── cycleId: string
-│       ├── lat: number
-│       ├── lng: number
-│       ├── accuracy: number?
-│       ├── bodyUp: boolean
-│       ├── deviceTime: timestamp
-│       └── createdAt: timestamp
-│
-├── cycles/                     # Cycle tracking
-│   └── {cycleId}/
-│       ├── id: string
-│       ├── haulerId: string
-│       ├── loaderId: string?
-│       ├── loaderLocation: { lat, lng }
-│       ├── dumpLocation: { lat, lng }
-│       ├── dumpRadius: number
-│       ├── steps: CycleStep[]
-│       ├── completed: boolean
-│       ├── anomalies: string[]
-│       ├── startedAt: timestamp
-│       └── completedAt: timestamp?
-│
-├── loaders/                    # Loader equipment
-│   └── {loaderId}/
-│       ├── id: string
-│       ├── name: string
-│       ├── location: { lat, lng }
-│       ├── waitingTruck: boolean
-│       └── radius: number
-│
-└── intents/                    # Client intents for server arbitration
-    └── {intentId}/
-        ├── haulerId: string
-        ├── cycleId: string
-        ├── type: string
-        ├── requestedStatus: string?
-        ├── deviceTime: timestamp
-        ├── location: { lat, lng }?
-        ├── context: object?
-        ├── processed: boolean
-        └── resultEventId: string?
+```dart
+HaulerEventEntity.create(
+  id: UUID.v4(),
+  haulerId: "HLR-xxxx",
+  cycleId: "cycle-xxxx",
+  fromStatus: HaulerStatus.queuing,
+  toStatus: HaulerStatus.spotting,
+  cause: TransitionCause.enteredLoaderRadius,
+  seq: eventSeq + 1,
+  metadata: {
+    'location': {lat, lng},
+    'bodyUp': false,
+  }
+)
 ```
 
-## 🔄 Offline-First & Rekonsiliasi
+**dedupKey Format**: `${haulerId}_${cycleId}_${seq}_${cause.code}`
 
-### Mekanisme
+### 3. Save Event (Offline-First)
 
-1. **Firestore Persistence**: Enabled by default untuk semua writes
-2. **Offline Queue**: Hive-based queue untuk events, telemetry, dan intents
-3. **Idempotent Writes**: Menggunakan dedupKey sebagai document ID
-4. **Monotonic Sequence**: seq per cycle untuk ordering
-5. **Device Time Tolerance**: Server menyimpan deviceTime dan serverTime terpisah
+**Proses**:
+1. **ALWAYS**: Queue ke Hive terlebih dahulu
+   - Create `QueueItemData` dengan type `event`
+   - Serialize event data ke JSON
+   - Store di Hive box `offline_queue`
+   - Generate `queueKey` untuk tracking
 
-### Alur Offline
+2. **IF ONLINE**: Background sync ke Firestore
+   - Convert entity ke model
+   - Write ke collection `hauler_events`
+   - Document ID = `dedupKey` (idempotent)
+   - Set `serverTime` = server timestamp
+   - Merge strategy untuk mencegah overwrite
+
+3. **Return**: Always return success (optimistic update)
+
+### 4. Update Hauler (Offline-First)
+
+**Proses**:
+1. **ALWAYS**: Queue ke Hive terlebih dahulu
+   - Create `QueueItemData` dengan type `haulerUpdate`
+   - Store update data: `{currentStatus, lastStatusChangeAt, eventSeq, cycleId}`
+   - Serialize ke JSON
+   - Store di Hive box `offline_queue`
+
+2. **IF ONLINE**: Background sync ke Firestore
+   - Write ke collection `haulers`
+   - Document = `{haulerId}`
+   - Add `deviceTime` = client timestamp
+   - Update fields: `currentStatus`, `lastStatusChangeAt`, `eventSeq`, `cycleId`
+
+3. **Return**: Always return success (optimistic update)
+
+### 5. Update Cycle Steps
+
+- Create `CycleStepEntity` dengan status baru
+- Add step ke cycle.steps array
+- Update cycle di Firestore (jika online) atau queue (jika offline)
+
+### 6. Emit New State
+
+- Update local state dengan:
+  - Updated hauler entity
+  - Updated cycle entity
+  - New eventSeq
+- UI akan otomatis update melalui BLoC stream
+
+---
+
+## 🔑 Key Features
+
+### Offline-First Pattern
+
+- **Selalu queue dulu**: Semua data selalu disimpan ke Hive queue terlebih dahulu
+- **Background sync**: Sync ke Firestore dilakukan di background (non-blocking)
+- **Optimistic updates**: UI langsung update, tidak menunggu server response
+- **Retry mechanism**: Item yang gagal sync akan di-retry otomatis
+
+### Idempotency
+
+- **dedupKey sebagai Document ID**: Event menggunakan dedupKey sebagai document ID di Firestore
+- **Merge strategy**: Menggunakan `SetOptions(merge: true)` untuk mencegah overwrite
+- **Sequence number**: Monotonic seq per cycle untuk ordering
+- **No duplicates**: Retry tidak akan membuat duplicate karena dedupKey sama
+
+### Error Handling
+
+- **Max retry**: Item yang gagal sync akan di-retry maksimal 5 kali
+- **Queue persistence**: Data tetap aman di Hive meski app restart
+- **Background sync**: Sync tidak blocking UI thread
+- **Automatic recovery**: Sync otomatis saat connectivity restored
+
+---
+
+## 📊 Data Flow Summary
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      OFFLINE FLOW                                │
-└─────────────────────────────────────────────────────────────────┘
-
-  [ONLINE]                    [OFFLINE]                  [BACK ONLINE]
-     │                            │                           │
-     │  Normal operation          │  Local state machine      │
-     │  via Firestore             │  continues working        │
-     │                            │                           │
-     │                            │  Events queued in         │
-     │                            │  Hive offline queue       │
-     │                            │                           │
-     │                            │  UI shows optimistic      │
-     │                            │  state updates            │
-     │                            │                           │
-     │                            │                           │
-     │                            │◀──────────────────────────│
-     │                            │  Connectivity restored    │
-     │                            │                           │
-     │◀───────────────────────────│  Queue processed:         │
-     │                            │  - Events synced          │
-     │                            │  - Telemetry synced       │
-     │                            │  - Intents sent           │
-     │                            │                           │
-     │  Server validates          │                           │
-     │  and may correct           │                           │
-     │                            │                           │
-     │  If correction:            │                           │
-     │  UI shows "corrected       │                           │
-     │  by server" banner         │                           │
-     └────────────────────────────┴───────────────────────────┘
+Status Transition
+    ↓
+Create Event Entity
+    ↓
+Queue Event to Hive (ALWAYS)
+    ↓
+Background Sync to Firestore (IF ONLINE)
+    ↓
+Update Local Hauler State
+    ↓
+Queue Hauler Update to Hive (ALWAYS)
+    ↓
+Background Sync to Firestore (IF ONLINE)
+    ↓
+Update Cycle Steps
+    ↓
+Emit New State
+    ↓
+UI Update
 ```
 
-### GPS Accuracy Guard
-
-- Jika `accuracy > 50m`, transisi berbasis lokasi ditunda
-- Melindungi dari false triggers saat GPS tidak stabil
-
-## 🗺️ Fitur Peta
-
-- **flutter_map + OpenStreetMap** (gratis, tidak perlu API key)
-- **Marker Hauler**: Menunjukkan posisi dan status real-time
-- **Circle Loader**: Radius hijau menandai zona loading
-- **Circle Dump Point**: Radius oranye menandai zona dumping
-- **Follow Mode**: Peta mengikuti pergerakan hauler
-
-## 🎮 Fitur & UX
-
-1. **Status Panel**: Menampilkan status saat ini dengan progress indicator
-2. **Body Up/Down Button**: Simulasi sensor bak dump
-3. **Simulation Mode**: Pergerakan otomatis untuk testing
-4. **Event Log**: Terminal-style log untuk debugging
-5. **Server Correction Banner**: Notifikasi jika status dikoreksi server
-6. **Offline Indicator**: Status koneksi dan pending queue count
+---
 
 ## 🚀 Menjalankan Aplikasi
 
-### Prerequisites
-
-- Flutter SDK >= 3.10.4
-- Firebase project (untuk Firestore)
-- Node.js >= 18 (untuk Cloud Functions)
-
-### Setup
-
 ```bash
-# Clone dan install dependencies
-cd hauler_truck
+# Install dependencies
 flutter pub get
 
-# Setup Firebase (optional untuk demo mode)
-flutterfire configure
-
-# Jalankan aplikasi
+# Run app
 flutter run
 ```
 
-### Deploy Cloud Functions
-
-```bash
-cd functions
-npm install
-npm run build
-firebase deploy --only functions
-```
-
-## 🧪 Pengujian
-
-### Skenario Test Offline
-
-1. Start cycle (QUEUING)
-2. **Putus koneksi**
-3. Simulasi pergerakan ke loader (T1 triggers locally)
-4. Loading complete → HAULING_LOAD
-5. Pergerakan ke dump point
-6. Body Up → DUMPING (T2 triggers locally)
-7. Body Down → HAULING_EMPTY
-8. **Restore koneksi**
-9. Verifikasi: Status akhir sama dengan server
-
-### Acceptance Criteria
-
-- [ ] Siklus tetap selesai saat offline
-- [ ] Tidak ada transisi duplikat setelah sync
-- [ ] Server dapat mengoreksi status jika diperlukan
-- [ ] Latensi transisi tercatat di events
-- [ ] GPS accuracy guard bekerja
-
-## 📝 Ringkasan Keputusan Kunci
-
-| Keputusan | Alasan |
-|-----------|--------|
-| **Server-Arbiter** | Single source of truth, mencegah state divergence |
-| **Event-Sourcing** | Audit trail lengkap, replay capability, debugging |
-| **Offline-First** | Mining operations sering di area sinyal lemah |
-| **Intent Pattern** | Client tidak set status langsung, hanya request |
-| **Idempotent Events** | Mencegah duplikasi saat retry offline queue |
-| **OSM/flutter_map** | Gratis, tidak perlu API key, cukup untuk demo |
-
-## ⚠️ Risiko & Mitigasi
-
-| Risiko | Mitigasi |
-|--------|----------|
-| **Clock drift** antar device | Simpan deviceTime dan serverTime terpisah; ordering by seq, bukan timestamp |
-| **GPS tidak akurat** | Guard: tunda transisi jika accuracy > threshold |
-| **Konflik status offline-online** | Server sebagai arbiter final; UI tampilkan correction banner |
-| **Queue overflow saat offline lama** | Limit queue size; prioritaskan events over telemetry |
-| **Network flaky** | Exponential backoff retry; Firestore built-in persistence |
+---
 
 ## 📁 Struktur Proyek
 
 ```
 lib/
 ├── core/
-│   ├── constants.dart        # App constants, enums
-│   └── state_machine.dart    # Status transitions & guards
-├── models/
-│   ├── hauler.dart           # Hauler, Loader, DumpPoint, GeoLocation
-│   └── events.dart           # HaulerEvent, Telemetry, Cycle, Intent
-├── services/
-│   ├── firestore_service.dart    # Firestore with offline support
-│   ├── location_service.dart     # GPS tracking
-│   ├── cycle_service.dart        # Cycle & transition management
-│   ├── simulation_service.dart   # Auto movement simulation
-│   └── offline_queue_service.dart # Hive-based offline queue
-├── providers/
-│   └── hauler_provider.dart      # Main state provider
-├── screens/
-│   └── home_screen.dart          # Main screen
-├── widgets/
-│   ├── hauler_map.dart           # Map with markers & circles
-│   ├── status_panel.dart         # Status display & controls
-│   └── event_log_panel.dart      # Debug event log
-└── main.dart
-
-functions/
-├── index.ts                  # Cloud Functions (arbiter)
-├── package.json
-└── tsconfig.json
+│   ├── constants.dart        # Status, causes, constants
+│   └── state_machine.dart    # State machine & guards
+├── domain/
+│   ├── entities/             # Business objects
+│   ├── repositories/         # Repository interfaces
+│   └── usecases/             # Business logic
+├── data/
+│   ├── datasources/          # Firestore & Hive
+│   ├── models/               # DTOs
+│   └── repositories/         # Repository implementations
+└── presentation/
+    ├── bloc/                 # State management
+    ├── pages/                # Screens
+    └── widgets/              # UI components
 ```
+
+---
 
 ## 📜 License
 
-MIT License - See LICENSE file for details.
+MIT License
