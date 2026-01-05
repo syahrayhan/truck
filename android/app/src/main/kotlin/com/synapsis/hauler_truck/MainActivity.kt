@@ -1,5 +1,6 @@
-package com.example.hauler_truck
+package com.synapsis.hauler_truck
 
 import io.flutter.embedding.android.FlutterActivity
 
 class MainActivity : FlutterActivity()
+

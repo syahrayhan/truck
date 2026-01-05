@@ -1,0 +1,55 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "hauler_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "cycleId", "order": "ASCENDING" },
+        { "fieldPath": "seq", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "hauler_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "haulerId", "order": "ASCENDING" },
+        { "fieldPath": "deviceTime", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "telemetry",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "haulerId", "order": "ASCENDING" },
+        { "fieldPath": "deviceTime", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "telemetry",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "haulerId", "order": "ASCENDING" },
+        { "fieldPath": "completed", "order": "ASCENDING" },
+        { "fieldPath": "startedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "intents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "haulerId", "order": "ASCENDING" },
+        { "fieldPath": "processed", "order": "ASCENDING" },
+        { "fieldPath": "deviceTime", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
+

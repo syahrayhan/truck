@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "hauler_truck" "\0"
+            VALUE "CompanyName", "Synapsis" "\0"
+            VALUE "FileDescription", "Hauler Truck Mining Operations" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "hauler_truck" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2025 com.example. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2025 Synapsis. All rights reserved." "\0"
             VALUE "OriginalFilename", "hauler_truck.exe" "\0"
-            VALUE "ProductName", "hauler_truck" "\0"
+            VALUE "ProductName", "Hauler Truck" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

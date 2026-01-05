@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Haulers collection
+    match /haulers/{haulerId} {
+      // Anyone can read (for demo). In production, restrict by auth.
+      allow read: if true;
+      
+      // Writes allowed for the hauler owner
+      // In production: request.auth.uid == haulerId or admin
+      allow write: if true;
+    }
+    
+    // Hauler events - append only
+    match /hauler_events/{eventId} {
+      allow read: if true;
+      
+      // Only allow create, not update or delete (immutable events)
+      allow create: if true;
+      allow update, delete: if false;
+    }
+    
+    // Telemetry - write only from devices
+    match /telemetry/{telemetryId} {
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if false;
+    }
+    
+    // Cycles
+    match /cycles/{cycleId} {
+      allow read: if true;
+      allow write: if true;
+    }
+    
+    // Loaders - read only for haulers
+    match /loaders/{loaderId} {
+      allow read: if true;
+      // Admin only writes in production
+      allow write: if true;
+    }
+    
+    // Intents - haulers create, functions process
+    match /intents/{intentId} {
+      allow read: if true;
+      allow create: if true;
+      // Only functions can update (mark as processed)
+      allow update: if true;
+      allow delete: if false;
+    }
+  }
+}
+

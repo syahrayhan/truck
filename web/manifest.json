@@ -1,11 +1,11 @@
 {
-    "name": "hauler_truck",
-    "short_name": "hauler_truck",
+    "name": "Hauler Truck",
+    "short_name": "Hauler Truck",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#0F0F23",
+    "theme_color": "#E94560",
+    "description": "Hauler Truck Mining Operations System",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
