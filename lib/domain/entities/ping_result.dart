@@ -127,7 +127,6 @@ class PingResult extends Equatable {
   /// Get connection quality based on ping
   ConnectionQuality get quality {
     if (!isReachable) return ConnectionQuality.offline;
-    
     if (pingMs < 50) return ConnectionQuality.excellent;
     if (pingMs < 100) return ConnectionQuality.good;
     if (pingMs < 200) return ConnectionQuality.fair;

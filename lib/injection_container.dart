@@ -22,11 +22,18 @@ Future<void> init(String haulerId) async {
   sl.registerFactory<HaulerBloc>(
     () => HaulerBloc(
       haulerId: haulerId,
-      haulerRepository: sl(),
-      cycleRepository: sl(),
-      loaderRepository: sl(),
-      locationRepository: sl(),
-      connectivityRepository: sl(),
+      getOrCreateHauler: sl(),
+      updateHaulerLocation: sl(),
+      updateBodyUp: sl(),
+      saveHaulerEvent: sl(),
+      updateHauler: sl(),
+      startCycle: sl(),
+      completeCycle: sl(),
+      updateCycle: sl(),
+      haulerRepository: sl(), // For streams only
+      loaderRepository: sl(), // For streams only
+      locationRepository: sl(), // Infrastructure
+      connectivityRepository: sl(), // Infrastructure
     ),
   );
 
@@ -38,8 +45,11 @@ Future<void> init(String haulerId) async {
   sl.registerLazySingleton(() => GetOrCreateHauler(sl()));
   sl.registerLazySingleton(() => UpdateHaulerLocation(sl()));
   sl.registerLazySingleton(() => UpdateBodyUp(sl()));
+  sl.registerLazySingleton(() => SaveHaulerEvent(sl()));
+  sl.registerLazySingleton(() => UpdateHauler(sl()));
   sl.registerLazySingleton(() => StartCycle(sl()));
   sl.registerLazySingleton(() => CompleteCycle(sl()));
+  sl.registerLazySingleton(() => UpdateCycle(sl()));
 
   // ==================== Repositories ====================
   sl.registerLazySingleton<HaulerRepository>(

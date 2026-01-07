@@ -6,17 +6,29 @@ import '../../../core/constants.dart';
 import '../../../core/state_machine.dart';
 import '../../../domain/entities/entities.dart';
 import '../../../domain/repositories/repositories.dart';
+import '../../../domain/usecases/usecases.dart';
 
 part 'hauler_event.dart';
 part 'hauler_state.dart';
 
 /// BLoC for managing hauler state
 class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
-  final HaulerRepository haulerRepository;
-  final CycleRepository cycleRepository;
-  final LoaderRepository loaderRepository;
-  final LocationRepository locationRepository;
-  final ConnectivityRepository connectivityRepository;
+  // Use Cases (Clean Architecture - Business Logic)
+  final GetOrCreateHauler getOrCreateHauler;
+  final UpdateHaulerLocation updateHaulerLocation;
+  final UpdateBodyUp updateBodyUp;
+  final SaveHaulerEvent saveHaulerEvent;
+  final UpdateHauler updateHauler;
+  final StartCycle startCycle;
+  final CompleteCycle completeCycle;
+  final UpdateCycle updateCycle;
+  
+  // Infrastructure Repositories (for streams and infrastructure services)
+  // Note: Streams and infrastructure services can be accessed directly
+  final HaulerRepository haulerRepository; // For streams only
+  final LoaderRepository loaderRepository; // For streams only
+  final LocationRepository locationRepository; // Infrastructure service
+  final ConnectivityRepository connectivityRepository; // Infrastructure service
   
   final _uuid = const Uuid();
   
@@ -27,11 +39,18 @@ class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
 
   HaulerBloc({
     required String haulerId,
-    required this.haulerRepository,
-    required this.cycleRepository,
-    required this.loaderRepository,
-    required this.locationRepository,
-    required this.connectivityRepository,
+    required this.getOrCreateHauler,
+    required this.updateHaulerLocation,
+    required this.updateBodyUp,
+    required this.saveHaulerEvent,
+    required this.updateHauler,
+    required this.startCycle,
+    required this.completeCycle,
+    required this.updateCycle,
+    required this.haulerRepository, // For streams only
+    required this.loaderRepository, // For streams only
+    required this.locationRepository, // Infrastructure
+    required this.connectivityRepository, // Infrastructure
   }) : super(HaulerState.initial(haulerId)) {
     on<InitializeHauler>(_onInitialize);
     on<_ConnectivityChanged>(_onConnectivityChanged);
@@ -67,8 +86,10 @@ class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
       // Initialize location service
       await locationRepository.initialize();
       
-      // Get or create hauler
-      final haulerResult = await haulerRepository.getOrCreateHauler(event.haulerId);
+      // Get or create hauler (using use case)
+      final haulerResult = await getOrCreateHauler(
+        GetOrCreateHaulerParams(haulerId: event.haulerId),
+      );
       
       if (haulerResult.isLeft()) {
         final failure = haulerResult.fold((l) => l, (r) => throw Exception('Unexpected Right'));
@@ -300,20 +321,23 @@ class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
     }
     
     final cycleId = _uuid.v4();
-    final cycle = CycleEntity.start(
-      id: cycleId,
-      haulerId: state.haulerId,
-      loaderId: state.selectedLoader!.id,
-      loaderLocation: state.selectedLoader!.location,
-      dumpLocation: state.dumpPoint!.location,
-    );
     
-    final result = await cycleRepository.createCycle(cycle);
+    // Start cycle (using use case)
+    final result = await startCycle(
+      StartCycleParams(
+        cycleId: cycleId,
+        haulerId: state.haulerId,
+        loaderId: state.selectedLoader!.id,
+        loaderLocation: state.selectedLoader!.location,
+        dumpLocation: state.dumpPoint!.location,
+      ),
+    );
     
     if (result.isLeft()) {
       final failure = result.fold((l) => l, (r) => throw Exception('Unexpected Right'));
       _addLog('Failed to start cycle: ${failure.message}');
     } else {
+      final cycle = result.fold((l) => throw Exception('Unexpected Left'), (r) => r);
       emit(state.copyWith(currentCycle: cycle));
       
       // Transition to queuing
@@ -333,8 +357,18 @@ class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
   ) async {
     if (state.currentCycle == null) return;
     
-    final completedCycle = state.currentCycle!.complete();
-    await cycleRepository.updateCycle(completedCycle);
+    // Complete cycle (using use case)
+    final result = await completeCycle(
+      CompleteCycleParams(cycle: state.currentCycle!),
+    );
+    
+    if (result.isLeft()) {
+      final failure = result.fold((l) => l, (r) => throw Exception('Unexpected Right'));
+      _addLog('Failed to complete cycle: ${failure.message}');
+      return;
+    }
+    
+    final completedCycle = result.fold((l) => throw Exception('Unexpected Left'), (r) => r);
     
     await _updateHaulerStatus(
       HaulerStatus.standby,
@@ -355,8 +389,13 @@ class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
     final updatedHauler = state.hauler!.copyWith(location: event.location);
     emit(state.copyWith(hauler: updatedHauler));
     
-    // Update Firestore occasionally
-    await haulerRepository.updateLocation(state.haulerId, event.location);
+    // Update location (using use case)
+    await updateHaulerLocation(
+      UpdateHaulerLocationParams(
+        haulerId: state.haulerId,
+        location: event.location,
+      ),
+    );
     
     // Process auto transitions
     add(const ProcessAutoTransitions());
@@ -378,7 +417,13 @@ class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
     final updatedHauler = state.hauler!.copyWith(bodyUp: event.isUp);
     emit(state.copyWith(hauler: updatedHauler));
     
-    await haulerRepository.updateBodyUp(state.haulerId, event.isUp);
+    // Update body up (using use case)
+    await updateBodyUp(
+      UpdateBodyUpParams(
+        haulerId: state.haulerId,
+        bodyUp: event.isUp,
+      ),
+    );
     
     _addLog('Body ${event.isUp ? "UP" : "DOWN"}');
     
@@ -557,8 +602,8 @@ class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
       },
     );
     
-    // Save event
-    await haulerRepository.saveEvent(event);
+    // Save event (using use case)
+    await saveHaulerEvent(SaveHaulerEventParams(event: event));
     
     // Update local hauler
     final updatedHauler = state.hauler?.copyWith(
@@ -569,22 +614,25 @@ class HaulerBloc extends Bloc<HaulerEvent, HaulerState> {
       eventSeq: newSeq,
     );
     
-    // Update Firestore
+    // Update Firestore (using use case)
     if (updatedHauler != null) {
-      await haulerRepository.updateHauler(state.haulerId, {
-        'currentStatus': newStatus.code,
-        'lastStatusChangeAt': now.toIso8601String(),
-        'cycleId': state.currentCycle?.id,
-        'eventSeq': newSeq,
-      });
+      await updateHauler(UpdateHaulerParams(
+        haulerId: state.haulerId,
+        data: {
+          'currentStatus': newStatus.code,
+          'lastStatusChangeAt': now.toIso8601String(),
+          'cycleId': state.currentCycle?.id,
+          'eventSeq': newSeq,
+        },
+      ));
     }
     
-    // Update cycle steps
+    // Update cycle steps (using use case)
     CycleEntity? updatedCycle;
     if (state.currentCycle != null) {
       final step = CycleStepEntity.enter(newStatus, state.hauler?.location);
       updatedCycle = state.currentCycle!.addStep(step);
-      await cycleRepository.updateCycle(updatedCycle);
+      await updateCycle(UpdateCycleParams(cycle: updatedCycle));
     }
     
     emit(state.copyWith(

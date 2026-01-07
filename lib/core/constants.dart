@@ -24,7 +24,6 @@ class AppConstants {
   // Offline queue
   static const String offlineQueueBox = 'offline_queue';
   static const String settingsBox = 'settings';
-  static const int maxQueueRetries = 5;
 }
 
 /// Hauler status states following the mining cycle

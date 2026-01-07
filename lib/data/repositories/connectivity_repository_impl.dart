@@ -15,7 +15,6 @@ class ConnectivityRepositoryImpl implements ConnectivityRepository {
   
   bool _isOnline = true;
   PingResult? _currentPing;
-  Timer? _batchSyncTimer;
   
   final StreamController<bool> _connectivityController = 
       StreamController<bool>.broadcast();
@@ -110,40 +109,22 @@ class ConnectivityRepositoryImpl implements ConnectivityRepository {
     return result;
   }
 
+  /// Simple sync based on flowchart: Check ping, if good then sync
   void _handlePingBasedSync(PingResult ping) {
-    final strategy = ping.syncStrategy;
-    
-    switch (strategy) {
-      case SyncStrategy.immediate:
-        // Cancel batch timer and sync immediately
-        _batchSyncTimer?.cancel();
-        _processOfflineQueue();
-        break;
-        
-      case SyncStrategy.batched:
-      case SyncStrategy.delayed:
-        // Setup batch timer if not already running
-        _setupBatchTimer(Duration(milliseconds: strategy.delayMs));
-        break;
-        
-      case SyncStrategy.criticalOnly:
-        // Only sync critical items
-        _processCriticalItemsOnly();
-        break;
-        
-      case SyncStrategy.queue:
-        // Don't sync, just queue
-        _batchSyncTimer?.cancel();
-        break;
+    // Simple logic: If ping >= good, sync pending items
+    if (_isPingGood(ping)) {
+      _processOfflineQueue();
     }
+    // If ping not good, do nothing (items stay in queue)
   }
 
-  void _setupBatchTimer(Duration delay) {
-    if (_batchSyncTimer?.isActive ?? false) return;
-    
-    _batchSyncTimer = Timer(delay, () {
-      _processOfflineQueue();
-    });
+  /// Check if ping is good enough for sync (>= good quality)
+  bool _isPingGood(PingResult ping) {
+    if (!ping.isReachable) return false;
+    // Ping is good if quality is excellent, good, or fair
+    return ping.quality == ConnectionQuality.excellent ||
+           ping.quality == ConnectionQuality.good ||
+           ping.quality == ConnectionQuality.fair;
   }
 
   @override
@@ -158,66 +139,35 @@ class ConnectivityRepositoryImpl implements ConnectivityRepository {
       return;
     }
 
-    final strategy = currentSyncStrategy;
-    
-    switch (strategy) {
-      case SyncStrategy.immediate:
-      case SyncStrategy.batched:
-      case SyncStrategy.delayed:
-        await _processOfflineQueue();
-        break;
-        
-      case SyncStrategy.criticalOnly:
-        await _processCriticalItemsOnly();
-        break;
-        
-      case SyncStrategy.queue:
-        // Don't sync, connection too poor
-        break;
+    // Simple logic: Only sync if ping is good
+    if (_currentPing != null && _isPingGood(_currentPing!)) {
+      await _processOfflineQueue();
     }
   }
 
   @override
   Future<int> get pendingQueueCount => offlineQueue.queueSize;
 
-  Future<void> _processCriticalItemsOnly() async {
-    final items = await offlineQueue.getPendingItems();
-    
-    // Only process status change events (critical)
-    final criticalItems = items.where((item) => 
-        item.type == QueueItemType.event || 
-        item.type == QueueItemType.haulerUpdate
-    ).toList();
-    
-    for (final item in criticalItems) {
-      if (!item.shouldRetry) {
-        await offlineQueue.remove(item.queueKey);
-        continue;
-      }
-
-      try {
-        await _syncItem(item);
-        await offlineQueue.remove(item.queueKey);
-      } catch (e) {
-        await offlineQueue.incrementRetry(item.queueKey);
-      }
-    }
-  }
-
+  /// Simple sync process following flowchart:
+  /// 1. Get pending items from local DB
+  /// 2. Sync each item to server
+  /// 3. If success: Remove from Hive
+  /// 4. If fail: Item stays in queue (will retry on next sync)
   Future<void> _processOfflineQueue() async {
+    // Get pending events from local DB
     final items = await offlineQueue.getPendingItems();
     
+    // Process each item
     for (final item in items) {
-      if (!item.shouldRetry) {
-        await offlineQueue.remove(item.queueKey);
-        continue;
-      }
-
       try {
+        // Sync to server
         await _syncItem(item);
+        
+        // Success: Remove item from Hive
         await offlineQueue.remove(item.queueKey);
       } catch (e) {
-        await offlineQueue.incrementRetry(item.queueKey);
+        // Fail: Item stays in queue (will retry on next sync cycle)
+        // No retry count limit - will keep retrying until success
       }
     }
   }
@@ -257,7 +207,6 @@ class ConnectivityRepositoryImpl implements ConnectivityRepository {
   }
 
   void dispose() {
-    _batchSyncTimer?.cancel();
     stopPingMonitoring();
     _pingService.dispose();
     _connectivityController.close();

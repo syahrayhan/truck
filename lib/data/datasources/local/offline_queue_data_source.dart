@@ -8,7 +8,6 @@ abstract class OfflineQueueDataSource {
   Future<String> enqueue(QueueItemData item); // Returns queueKey
   Future<List<QueueItemData>> getPendingItems();
   Future<void> remove(String queueKey);
-  Future<void> incrementRetry(String queueKey);
   Future<int> get queueSize;
   Future<void> clear();
 }
@@ -69,17 +68,6 @@ class OfflineQueueDataSourceImpl implements OfflineQueueDataSource {
   }
 
   @override
-  Future<void> incrementRetry(String queueKey) async {
-    await _ensureInitialized();
-    final json = _queueBox!.get(queueKey);
-    if (json != null) {
-      final map = jsonDecode(json) as Map<String, dynamic>;
-      map['retryCount'] = (map['retryCount'] as int? ?? 0) + 1;
-      await _queueBox!.put(queueKey, jsonEncode(map));
-    }
-  }
-
-  @override
   Future<int> get queueSize async {
     await _ensureInitialized();
     return _queueBox!.length;
@@ -107,7 +95,6 @@ class QueueItemData {
   final QueueItemType type;
   final Map<String, dynamic> data;
   final DateTime createdAt;
-  final int retryCount;
 
   const QueueItemData({
     required this.id,
@@ -115,7 +102,6 @@ class QueueItemData {
     required this.type,
     required this.data,
     required this.createdAt,
-    this.retryCount = 0,
   });
 
   factory QueueItemData.create({
@@ -142,7 +128,6 @@ class QueueItemData {
       ),
       data: map['data'] as Map<String, dynamic>,
       createdAt: DateTime.parse(map['createdAt'] as String),
-      retryCount: map['retryCount'] as int? ?? 0,
     );
   }
 
@@ -152,11 +137,8 @@ class QueueItemData {
       'type': type.name,
       'data': data,
       'createdAt': createdAt.toIso8601String(),
-      'retryCount': retryCount,
     };
   }
-
-  bool get shouldRetry => retryCount < AppConstants.maxQueueRetries;
 }
 
 
